@@ -5,6 +5,9 @@ using CsvHelper;
 using CsvHelper.Configuration;
 using System.Globalization;
 using System.Linq;
+using System.Threading.Tasks;
+using System.Threading;
+using System.Collections.Concurrent;
 
 namespace CsvService.Core
 {
@@ -15,6 +18,12 @@ namespace CsvService.Core
     {
         private Dictionary<string, ICellValidator> _validators = new();
         private Config _config;
+        private BlockingCollection<RowObject> _rows = new BlockingCollection<RowObject>();
+        private CancellationTokenSource _cts = new CancellationTokenSource();
+
+        private const int TASK_COUNT = 4;
+
+        public List<string> Errors = new List<string>();
 
         public CsvValidator(Config config)
         {
@@ -49,16 +58,7 @@ namespace CsvService.Core
 
                         if (types.ContainsKey(validatorName))
                         {
-                            ICellValidator validator;
-
-                            if (parameters == null)
-                            {
-                                validator = (ICellValidator)Activator.CreateInstance(types[validatorName]);
-                            }
-                            else
-                            {
-                                validator = (ICellValidator)Activator.CreateInstance(types[validatorName], parameters);
-                            }
+                            ICellValidator validator = (ICellValidator)Activator.CreateInstance(types[validatorName], parameters);
 
                             validator.AllowEmpty = validatorConfig.AllowEmpty.GetValueOrDefault(false);
 
@@ -95,7 +95,7 @@ namespace CsvService.Core
                 throw new FileNotFoundException();
             }
 
-            List<string> rv = new();
+            Errors.Clear();
 
             int currentRow = 0;
 
@@ -104,6 +104,13 @@ namespace CsvService.Core
                 Delimiter = _config.Delimiter,
                 HasHeaderRecord = false
             };
+
+            Task[] tasks = new Task[TASK_COUNT];
+            for (int i = 0; i < TASK_COUNT; i++)
+            {
+                tasks[i] = new Task(ProcessQueue);
+                tasks[i].Start();
+            }
 
             using (var reader = new StreamReader(filePath))
             using (var csv = new CsvReader(reader, config))
@@ -117,24 +124,33 @@ namespace CsvService.Core
                         currentRow++;
                         continue;
                     }
+
+                    if (_cts.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
                     var row = csv.GetRecord<dynamic>();
 
-                    if (!ValidateRow(currentRow, row, out List<string> errors))
+                    // _rows may mark completed before adding
+                    try
                     {
-                        rv.AddRange(errors);
-
-                        // sent back first 50 errors
-                        if (rv.Count >= 50)
+                        if (!_rows.IsAddingCompleted)
                         {
-                            return rv.Take(50).ToList();
+                            _rows.TryAdd(new RowObject { RowNumber = currentRow, Row = row });
                         }
                     }
+                    catch { }
 
                     currentRow++;
                 }
+
+                _rows.CompleteAdding();
             }
 
-            return rv;
+            Task.WaitAll(tasks);
+
+            return Errors;
         }
 
         /// <summary>
@@ -143,9 +159,9 @@ namespace CsvService.Core
         /// <returns>
         /// Is the row valid
         /// </returns>
-        public bool ValidateRow(int rowNumber, dynamic row, out List<string> errors)
+        public List<string> ValidateRow(int rowNumber, dynamic row)
         {
-            errors = new List<string>();
+            List<string> errors = new();
 
             int currentColumn = 0;
 
@@ -182,9 +198,37 @@ namespace CsvService.Core
                 currentColumn++;
             }
 
-            return !errors.Any();
+            return errors;
+        }
+
+        public void ProcessQueue()
+        {
+            while (!_cts.IsCancellationRequested && !_rows.IsCompleted)
+            {
+                if (_rows.TryTake(out RowObject row, 10))
+                {
+                    foreach (string error in ValidateRow(row.RowNumber, row.Row))
+                    {
+                        if (Errors.Count >= 50)
+                        {
+                            _rows.CompleteAdding();
+                            _cts.Cancel();
+                        }
+                        else
+                        {
+                            Errors.Add(error);
+                        }
+                    }
+                }
+            }
         }
 
         private string GetErrorMessage(int row, int column, string message) => $"row {row}, column {column}: {message}";
+    }
+
+    public class RowObject
+    {
+        public int RowNumber { get; set; }
+        public dynamic Row { get; set; }
     }
 }

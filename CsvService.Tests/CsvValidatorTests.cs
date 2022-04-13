@@ -26,11 +26,17 @@ namespace CsvService.Tests
         [Fact]
         public void CsvValidator_Validate_Big_Valid_CSV_Should_Valid()
         {
+            System.Diagnostics.Stopwatch sw = new System.Diagnostics.Stopwatch();
+            sw.Start();
             var validator = new CsvValidator(CreateDefaultConfig()).Build();
             
             List<string> errors = validator.Validate(Path.Combine(TEST_DATA_PATH, "Big_Valid_CSV.csv"));
 
             Assert.Empty(errors);
+            sw.Stop();
+            // 5123
+            // 2 no 4128
+            var total = sw.Elapsed.TotalMilliseconds;
         }
 
         [Fact]
@@ -136,7 +142,7 @@ namespace CsvService.Tests
             }
 
             CsvValidator validator = new CsvValidator(config).Build();
-            validator.ValidateRow(1, record, out List<string> errors);
+            List<string> errors = validator.ValidateRow(1, record);
 
             Assert.Equal(2, errors.Count);
             Assert.Equal("row 1, column 3: the cell is not an integer", errors[0]);
@@ -162,7 +168,7 @@ namespace CsvService.Tests
             }
 
             CsvValidator validator = new CsvValidator(config).Build();
-            validator.ValidateRow(1, record, out List<string> errors);
+            List<string> errors = validator.ValidateRow(1, record);
 
             Assert.Empty(errors);
         }

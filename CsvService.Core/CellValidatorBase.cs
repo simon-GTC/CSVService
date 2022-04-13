@@ -1,11 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 
 namespace CsvService.Core
 {
     public abstract class CellValidatorBase : ICellValidator
     {
-        protected Dictionary<string, ValidationResult> _cache = new();
+        protected ConcurrentDictionary<string, ValidationResult> _cache = new();
         /// <summary>
         /// Enable caching by default to have best performance
         /// POC: if there are lots of repeated value, enabling it should improve the performance
